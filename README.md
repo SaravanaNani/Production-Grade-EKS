@@ -419,7 +419,193 @@ Access: `https://prometheus.<YOUR_DOMAIN>`
 
 #### Custom Prometheus Stack YAML
 ```yaml
-<!-- PLACE YOUR prometheus-stack.yaml HERE -->
+# <!-- prometheus-stack.yaml  -->
+--
+# ServiceAccount for Prometheus
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: monitoring
+---
+# RBAC for Prometheus
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/proxy", "services", "endpoints", "pods", "namespaces", "events"]
+    verbs: ["get", "list", "watch", "create", "patch"]
+  - apiGroups: ["apps", "extensions"]
+    resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["prometheuses","alertmanagers","servicemonitors","prometheusrules","thanosrulers","podmonitors","scrapeconfigs"]
+    verbs: ["get","list","watch","create","update","patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: monitoring
+---
+# Prometheus CR (Operator will create StatefulSet)
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  replicas: 1
+  serviceAccountName: prometheus
+  serviceMonitorSelector: {}
+  podMonitorSelector: {}
+  resources:
+    requests:
+      memory: 400Mi
+      cpu: 200m
+  retention: 10d
+  enableAdminAPI: true
+  securityContext:
+    runAsUser: 65534
+    runAsGroup: 65534
+    fsGroup: 65534
+  storage:
+    volumeClaimTemplate:
+      metadata:
+        name: prometheus-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+        storageClassName: gp3
+---
+# Prometheus Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-service
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/instance: prometheus
+spec:
+  type: ClusterIP
+  ports:
+  - name: web
+    port: 9090
+    targetPort: web
+  selector:
+    prometheus: prometheus
+---
+# Ingress for Prometheus
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: prometheus-ingress
+  namespace: monitoring
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - prometheus.<Your_DOMAIN>
+      secretName: prometheus-tls
+  rules:
+    - host: prometheus.<Your_DOMAIN>
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: prometheus-service
+                port:
+                  number: 9090
+---
+# ServiceMonitor for Node Exporter
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: node-exporter
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: node-exporter
+  namespaceSelector:
+    matchNames:
+      - monitoring
+  endpoints:
+  - port: metrics
+    interval: 15s
+---
+# ServiceMonitor for Kube State Metrics
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kube-state-metrics
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: kube-state-metrics
+  namespaceSelector:
+    matchNames:
+      - monitoring
+  endpoints:
+  - port: http-metrics
+    interval: 15s
+---
+# PodMonitor for cAdvisor
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: cadvisor
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: cadvisor
+  namespaceSelector:
+    matchNames:
+      - monitoring
+  podMetricsEndpoints:
+  - port: http-metrics
+    interval: 15s
+---
+# Prometheus Rules for Cluster Usage
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cluster-rules
+  namespace: monitoring
+spec:
+  groups:
+  - name: cluster.rules
+    rules:
+    - record: instance:node_memory_utilisation:ratio
+      expr: 1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)
+    - record: instance:node_cpu_utilisation:rate5m
+      expr: 1 - avg without (cpu) (rate(node_cpu_seconds_total{mode="idle"}[5m]))
+    - record: instance:node_disk_utilisation:rate5m
+      expr: rate(node_disk_io_time_seconds_total[5m])
 ```
 
 > 💡 Why: Prometheus Operator simplifies managing CRDs, ServiceMonitors, and alerting rules for Kubernetes observability.
@@ -428,10 +614,264 @@ Access: `https://prometheus.<YOUR_DOMAIN>`
 
 ### 📦 3.3 Node Exporter, cAdvisor, and Kube-State-Metrics
 
+node-exporter.yaml 
+
 ```yaml
-<!-- PLACE YOUR node-exporter.yaml HERE -->
-<!-- PLACE YOUR cAdvisor.yaml HERE -->
-<!-- PLACE YOUR kube-state-metrics.yaml HERE -->
+#<!--  node-exporter.yaml HERE -->
+# node-exporter.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-exporter
+  namespace: monitoring
+  labels:
+    app: node-exporter
+spec:
+  selector:
+    matchLabels:
+      app: node-exporter
+  template:
+    metadata:
+      labels:
+        app: node-exporter
+    spec:
+      hostNetwork: true
+      hostPID: true
+      tolerations:
+        - operator: "Exists"
+      containers:
+        - name: node-exporter
+          image: quay.io/prometheus/node-exporter:v1.8.0
+          args:
+            - --path.rootfs=/host
+          ports:
+            - name: metrics
+              containerPort: 9100
+              hostPort: 9100
+              protocol: TCP
+          volumeMounts:
+            - name: rootfs
+              mountPath: /host
+              readOnly: true
+      volumes:
+        - name: rootfs
+          hostPath:
+            path: /
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: node-exporter
+  namespace: monitoring
+  labels:
+    app: node-exporter
+spec:
+  selector:
+    app: node-exporter
+  ports:
+    - name: metrics
+      port: 9100
+      targetPort: 9100
+  type: ClusterIP
+
+```
+cAdvisor.yaml HERE
+
+```yaml
+# <!-- cAdvisor.yaml HERE -->
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: cadvisor
+  namespace: monitoring
+  labels:
+    app: cadvisor
+spec:
+  selector:
+    matchLabels:
+      app: cadvisor
+  template:
+    metadata:
+      labels:
+        app: cadvisor
+    spec:
+      containers:
+        - name: cadvisor
+          image: gcr.io/cadvisor/cadvisor:v0.47.2
+          ports:
+            - name: http-metrics   # 👈 matches PodMonitor port
+              containerPort: 8080
+          volumeMounts:
+            - name: rootfs
+              mountPath: /rootfs
+              readOnly: true
+            - name: var-run
+              mountPath: /var/run
+              readOnly: false
+            - name: sys
+              mountPath: /sys
+              readOnly: true
+            - name: docker
+              mountPath: /var/lib/docker
+              readOnly: true
+      volumes:
+        - name: rootfs
+          hostPath:
+            path: /
+        - name: var-run
+          hostPath:
+            path: /var/run
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: docker
+          hostPath:
+            path: /var/lib/docker
+```
+
+kube-state-metrics.yaml
+```yaml
+#<!--  kube-state-metrics.yaml HERE -->
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-state-metrics
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kube-state-metrics
+rules:
+  # Core resources
+  - apiGroups: [""]
+    resources:
+      - pods
+      - services
+      - endpoints
+      - nodes
+      - namespaces
+      - replicationcontrollers
+      - persistentvolumeclaims
+      - persistentvolumes
+      - configmaps
+      - secrets
+      - resourcequotas
+      - limitranges
+      - events
+    verbs: ["list", "watch"]
+
+  # Apps API group
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - daemonsets
+      - replicasets
+      - statefulsets
+    verbs: ["list", "watch"]
+
+  # Networking API group
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - networkpolicies
+      - ingresses
+    verbs: ["list", "watch"]
+
+  # Policy API group
+  - apiGroups: ["policy"]
+    resources:
+      - poddisruptionbudgets
+    verbs: ["list", "watch"]
+
+  # Storage API group
+  - apiGroups: ["storage.k8s.io"]
+    resources:
+      - storageclasses
+      - volumeattachments
+    verbs: ["list", "watch"]
+
+  # Coordination API group
+  - apiGroups: ["coordination.k8s.io"]
+    resources:
+      - leases
+    verbs: ["list", "watch"]
+
+  # Certificates API group
+  - apiGroups: ["certificates.k8s.io"]
+    resources:
+      - certificatesigningrequests
+    verbs: ["list", "watch"]
+
+  # Admissionregistration API group
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources:
+      - mutatingwebhookconfigurations
+      - validatingwebhookconfigurations
+    verbs: ["list", "watch"]
+
+  # Autoscaling API group
+  - apiGroups: ["autoscaling"]
+    resources:
+      - horizontalpodautoscalers
+    verbs: ["list", "watch"]
+
+  # Batch API group
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+      - cronjobs
+    verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kube-state-metrics
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kube-state-metrics
+subjects:
+  - kind: ServiceAccount
+    name: kube-state-metrics
+    namespace: monitoring
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-state-metrics
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kube-state-metrics
+  template:
+    metadata:
+      labels:
+        app: kube-state-metrics
+    spec:
+      serviceAccountName: kube-state-metrics
+      containers:
+      - name: kube-state-metrics
+        image: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.11.0
+        ports:
+        - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-state-metrics
+  namespace: monitoring
+  labels:
+    app: kube-state-metrics
+spec:
+  type: ClusterIP
+  selector:
+    app: kube-state-metrics
+  ports:
+    - port: 8080
+      targetPort: 8080
 ```
 
 > ⚙️ Validation
@@ -446,15 +886,204 @@ kubectl logs -n monitoring -l app=node-exporter --tail=10
 
 ### 🧰 3.4 Promtail DaemonSet (EKS)
 ```yaml
-<!-- PLACE YOUR promtail.yaml HERE -->
+#<!--  promtail.yaml HERE -->
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: promtail
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: promtail
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - namespaces
+      - nodes
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: promtail
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: promtail
+subjects:
+  - kind: ServiceAccount
+    name: promtail
+    namespace: monitoring
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: promtail-config
+  namespace: monitoring
+data:
+  promtail.yaml: |
+    server:
+      http_listen_port: 9080
+      grpc_listen_port: 0
+      log_level: info
+
+    positions:
+      filename: /run/promtail/positions.yaml
+
+    clients:
+      - url: http://10.10.101.140:3100/loki/api/v1/push
+
+    scrape_configs:
+      # --- System logs ---
+      - job_name: varlogs
+        static_configs:
+          - targets: [localhost]
+            labels:
+              job: varlogs
+              __path__: /var/log/**/*.log
+
+      # --- Application logs ---
+      - job_name: app-logs
+        static_configs:
+          - targets: [localhost]
+            labels:
+              job: app-logs
+              namespace: adq-dev
+              __path__: /var/log/adq-dev/*.log
+
+      # --- Kubernetes pod logs (Static discovery for private EKS) ---
+      - job_name: kubernetes-pods-static
+        static_configs:
+          - targets: [localhost]
+            labels:
+              job: kubernetes-pods
+              __path__: /var/log/pods/*/*/*.log
+        pipeline_stages:
+          - regex:
+              expression: '/var/log/pods/(?P<namespace>[^_]+)_(?P<pod>[^_]+)_[^/]+/(?P<container>[^/]+)/.*'
+          - labels:
+              namespace:
+              pod:
+              container:
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: promtail
+  namespace: monitoring
+  labels:
+    app: promtail
+spec:
+  selector:
+    matchLabels:
+      app: promtail
+  template:
+    metadata:
+      labels:
+        app: promtail
+    spec:
+      serviceAccountName: promtail
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: promtail
+          image: grafana/promtail:2.9.0
+          args:
+            - -config.file=/etc/promtail/promtail.yaml
+          volumeMounts:
+            - name: config
+              mountPath: /etc/promtail
+            - name: varlog
+              mountPath: /var/log
+              readOnly: true
+            - name: positions
+              mountPath: /run/promtail
+      volumes:
+        - name: config
+          configMap:
+            name: promtail-config
+        - name: varlog
+          hostPath:
+            path: /var/log
+        - name: positions
+          hostPath:
+            path: /run/promtail
+            type: DirectoryOrCreate
 ```
 
 > 💡 Why: Promtail runs on every EKS node, collecting logs from `/var/log/pods` and sending them to Loki running on Bastion.
 
 > ⚙️ Validation
+
+logs-validation.sh
 ```bash
 kubectl logs -n monitoring -l app=promtail --tail=50
 curl -s http://<BASTION_PVT_IP>:3100/ready
+# 1) What labels exist?
+curl -s "http://$BASTION_PVT_IP:3100/loki/api/v1/query" | jq .
+
+# 2) Which jobs?
+curl -s "http://$BASTION_PVT_IP:3100/loki/api/v1/query" | jq .
+
+# 3) Streams for each job (instant)
+curl -G -s "http://$BASTION_PVT_IP:3100/loki/api/v1/query" \
+  --data-urlencode 'query={job="varlogs"}' | jq '.data.result | length'
+
+curl -G -s "http://$BASTION_PVT_IP:3100/loki/api/v1/query" \
+  --data-urlencode 'query={job="kubernetes-pods"}' | jq '.data.result | length'
+
+curl -G -s "http://$BASTION_PVT_IP:3100/loki/api/v1/query" \
+  --data-urlencode 'query={job="app-logs"}' | jq '.data.result | length'
+
+# 4) Recent log lines in last 5 minutes (range); MUST use bash vars (no single-quote subshells)
+START=$(($(date +%s)-300))000000000
+END=$(date +%s)000000000
+
+curl -G -s "http://$BASTION_PVT_IP:3100/loki/api/v1/query_range" \
+  --data-urlencode "query={job=\"kubernetes-pods\"}" \
+  --data-urlencode "limit=10" \
+  --data-urlencode "start=${START}" \
+  --data-urlencode "end=${END}" | jq '.data.result | length'
+
+curl -G -s "http://$BASTION_PVT_IP:3100/loki/api/v1/query_range" \
+  --data-urlencode "query={job=\"app-logs\",namespace=\"adq-dev\"}" \
+  --data-urlencode "limit=10" \
+  --data-urlencode "start=${START}" \
+  --data-urlencode "end=${END}" | jq '.data.result | length'
+
+```
+```
+### Extpected Outputs:
+
+   {
+   "status": "success",
+   "data": [
+     "container",
+     "filename",
+     "job",
+     "namespace",
+     "pod"
+   ]
+ }
+ {
+   "status": "success",
+   "data": [
+     "app-logs",
+     "kubernetes-pods",
+     "varlogs"
+   ]
+ }
+ 9
+ 5
+ 1
+ 3
+ 1
 ```
 
 ---
@@ -462,11 +1091,106 @@ curl -s http://<BASTION_PVT_IP>:3100/ready
 ### 🖥️ 3.5 Loki + Grafana (on Bastion)
 
 Loki Config: `/etc/loki/loki-config.yaml`  
+
+```yaml
+#/etc/loki/loki-config.yaml
+ server:
+  http_listen_port: 3100
+  http_listen_address: 0.0.0.0
+  log_level: info
+
+auth_enabled: false   # disable multi-tenant auth
+
+ingester:
+  lifecycler:
+    ring:
+      kvstore:
+        store: inmemory
+      replication_factor: 1
+  chunk_idle_period: 5m
+  chunk_retain_period: 30s
+  wal:
+    dir: /var/loki/wal
+
+schema_config:
+  configs:
+    - from: 2020-10-24
+      store: boltdb-shipper
+      object_store: filesystem
+      schema: v11
+      index:
+        prefix: index_
+        period: 24h
+
+storage_config:
+  boltdb_shipper:
+    active_index_directory: /var/loki/index
+    cache_location: /var/loki/cache
+    shared_store: filesystem
+  filesystem:
+    directory: /var/loki/chunks
+
+compactor:
+  working_directory: /var/loki/compactor
+  compaction_interval: 5m
+
+limits_config:
+  ingestion_rate_mb: 8
+  ingestion_burst_size_mb: 16
+  max_entries_limit_per_query: 5000
+  max_streams_per_user: 10000
+  reject_old_samples: true
+  retention_period: 168h   # 7 days retention
+
+chunk_store_config:
+  max_look_back_period: 0s
+
+table_manager:
+  retention_deletes_enabled: true
+  retention_period: 168h
+
+```
+
+Loki Service: `/etc/systemd/system/loki.service`
+
+```bash
+#/etc/systemd/system/loki.service
+[Unit]
+Description=Loki Log Aggregator
+After=network.target
+
+[Service]
+User=loki
+Group=loki
+Type=simple
+
+ExecStart=/usr/local/bin/loki \
+  -config.file=/etc/loki/loki-config.yaml \
+  -server.http-listen-address=0.0.0.0:3100 \
+  -server.grpc-listen-address=0.0.0.0:9095
+
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+
+> ⚙️ Validation
+```bash
+curl -s http://<BASTION_PVT_IP>:3100/ready
+```
+
+
 Grafana Service: `/etc/systemd/system/grafana.service`
 
 Access:
 - Grafana → `https://grafana.<YOUR_DOMAIN>`
 - Loki → `http://<BASTION_PVT_IP>:3100`
+
+
+
 
 **Datasource Configuration**
 ```yaml
