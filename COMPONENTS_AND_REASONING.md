@@ -38,5 +38,3 @@
 - [Kyverno](https://kyverno.io/docs/)
 
 ---
-
-✅ **End of Documentation Suite**
