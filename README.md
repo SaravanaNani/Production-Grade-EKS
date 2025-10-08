@@ -1783,4 +1783,3 @@ Your **Production-Grade EKS Cluster** now includes:
 > 💡 You can now extend this setup with CI/CD, alerting rules, and backup policies.
 
 ---
-
