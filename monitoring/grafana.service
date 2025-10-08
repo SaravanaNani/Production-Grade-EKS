@@ -1,4 +1,4 @@
-**#/etc/systemd/system/grafana.service**
+#/etc/systemd/system/grafana.service
 
 [Unit]
 Description=Grafana
