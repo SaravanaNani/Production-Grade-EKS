@@ -1,0 +1,19 @@
+[Unit]
+Description=Loki Log Aggregator
+After=network.target
+
+[Service]
+User=loki
+Group=loki
+Type=simple
+
+ExecStart=/usr/local/bin/loki \
+  -config.file=/etc/loki/loki-config.yaml \
+  -server.http-listen-address=0.0.0.0:3100 \
+  -server.grpc-listen-address=0.0.0.0:9095
+
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
