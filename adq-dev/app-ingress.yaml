@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: devops-task-ingress
+  namespace: adq-dev
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - app.adqget.bar
+    secretName: devops-task-tls  # cert will be stored here
+  rules:
+  - host: app.adqget.bar
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: devops-task-app
+            port:
+              number: 80
