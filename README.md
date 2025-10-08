@@ -1056,11 +1056,10 @@ curl -G -s "http://$BASTION_PVT_IP:3100/loki/api/v1/query_range" \
   --data-urlencode "limit=10" \
   --data-urlencode "start=${START}" \
   --data-urlencode "end=${END}" | jq '.data.result | length'
+```
 
-```
-```
 ### Extpected Outputs:
-
+```
    {
    "status": "success",
    "data": [
@@ -1150,9 +1149,22 @@ table_manager:
   retention_period: 168h
 
 ```
+Loki Installation:
+
+```bash
+
+#Install Loki binary (example — update to latest stable v3 release):
+
+# check latest version at https://github.com/grafana/loki/releases, replace v3.x.y below
+LOKI_VER="v3.5.5"
+cd /tmp
+curl -LO "https://github.com/grafana/loki/releases/download/${LOKI_VER}/loki-linux-amd64.zip"
+unzip loki-linux-amd64.zip
+sudo mv loki-linux-amd64 /usr/local/bin/loki
+sudo chmod +x /usr/local/bin/loki
+```
 
 Loki Service: `/etc/systemd/system/loki.service`
-
 ```bash
 #/etc/systemd/system/loki.service
 [Unit]
@@ -1175,22 +1187,60 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 ```
+```
+sudo systemctl daemon-reload
+sudo systemctl enable --now loki
+sudo systemctl status loki
+```
 
-
-> ⚙️ Validation
+> ⚙️ Validation - Run foreground (for tests):
 ```bash
-curl -s http://<BASTION_PVT_IP>:3100/ready
+/usr/local/bin/loki -config.file=/etc/loki/loki-config.yaml
 ```
 
 
+Grafana Installation:
+```bash
+sudo tee /etc/yum.repos.d/grafana.repo<<EOF
+[grafana]
+name=grafana
+baseurl=https://packages.grafana.com/oss/rpm
+repo_gpgcheck=1
+enabled=1
+gpgcheck=1
+gpgkey=https://packages.grafana.com/gpg.key
+EOF
+
+sudo yum install -y grafana
+sudo systemctl enable --now grafana-server
+```
+
 Grafana Service: `/etc/systemd/system/grafana.service`
 
+```bash
+[Unit]
+Description=Grafana
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/share/grafana/bin/grafana-server web
+Restart=on-failure
+User=root
+WorkingDirectory=/usr/share/grafana
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl restart grafana-server
+sudo systemctl status grafana-server
+```
+
 Access:
-- Grafana → `https://grafana.<YOUR_DOMAIN>`
-- Loki → `http://<BASTION_PVT_IP>:3100`
-
-
-
+- Grafana → `https:// BASTION_PUBLIC_IP:3000` -> login with UserName and Password = admin 
+- prometheus ->  `https://prometheus.<YOUR_DOMAIN>`
 
 **Datasource Configuration**
 ```yaml
@@ -1203,7 +1253,118 @@ url: http://localhost:3100
 **Import Dashboards**
 - Node Exporter: 1860  
 - Kubernetes Cluster: 315  
-- Loki Logs: 14055  
+- Loki Logs: Explore → Query `{job="app-logs", namespace="adq-dev"} |= ""`
+
+LOKI DASHBAORD JSON: (OPTIONAL)
+```json
+{
+  "title": "Unified EKS Logs (System + K8s + App)",
+  "uid": "eks-logs-unified-v2",
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "10s",
+  "tags": ["loki","logs","kubernetes","promtail"],
+  "templating": {
+    "list": [
+      {
+        "name": "job",
+        "type": "query",
+        "datasource": "loki",
+        "refresh": 1,
+        "query": "label_values(job)",
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".+",
+        "current": { "text": "All", "value": ".+" }
+      },
+      {
+        "name": "namespace",
+        "type": "query",
+        "datasource": "loki",
+        "refresh": 1,
+        "query": "label_values({job=~\"$job\"}, namespace)",
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".+",
+        "current": { "text": "All", "value": ".+" }
+      },
+      {
+        "name": "pod",
+        "type": "query",
+        "datasource": "loki",
+        "refresh": 1,
+        "query": "label_values({job=~\"$job\", namespace=~\"$namespace\"}, pod)",
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".+",
+        "current": { "text": "All", "value": ".+" }
+      },
+      {
+        "name": "container",
+        "type": "query",
+        "datasource": "loki",
+        "refresh": 1,
+        "query": "label_values({job=~\"$job\", namespace=~\"$namespace\", pod=~\"$pod\"}, container)",
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".+",
+        "current": { "text": "All", "value": ".+" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Log volume by job",
+      "datasource": "loki",
+      "targets": [
+        { "expr": "sum by (job) (rate({job=~\"$job\"}[1m]))", "legendFormat": "{{job}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } },
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Log volume by namespace",
+      "datasource": "loki",
+      "targets": [
+        { "expr": "sum by (namespace) (rate({job=~\"$job\", namespace=~\"$namespace\"}[1m]))", "legendFormat": "{{namespace}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } },
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 }
+    },
+    {
+      "type": "table",
+      "title": "Top pods by log lines",
+      "datasource": "loki",
+      "targets": [
+        { "expr": "topk(10, sum by (pod) (rate({job=~\"$job\", namespace=~\"$namespace\"}[5m])))", "legendFormat": "{{pod}}" }
+      ],
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 7 }
+    },
+    {
+      "type": "table",
+      "title": "Top containers by log lines",
+      "datasource": "loki",
+      "targets": [
+        { "expr": "topk(10, sum by (container) (rate({job=~\"$job\", namespace=~\"$namespace\", pod=~\"$pod\"}[5m])))", "legendFormat": "{{container}}" }
+      ],
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 7 }
+    },
+    {
+      "type": "logs",
+      "title": "Live logs",
+      "datasource": "loki",
+      "options": { "showLabels": true, "showTime": true, "wrapLogMessage": true },
+      "targets": [
+        { "expr": "{job=~\"$job\", namespace=~\"$namespace\", pod=~\"$pod\", container=~\"$container\"}" }
+      ],
+      "gridPos": { "x": 0, "y": 15, "w": 24, "h": 12 }
+    }
+  ]
+}
+```
 
 > 💡 Why: Hosting Loki and Grafana externally reduces resource usage on the EKS cluster while maintaining centralized observability.
 
