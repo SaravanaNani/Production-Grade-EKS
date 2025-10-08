@@ -240,6 +240,60 @@ aws sts get-caller-identity
 
 ## 🔐 Part 2 – Ingress Controller, TLS, and Application Deployment
 
+##  Application Build & Push (Example)
+
+> **Why**: We need a containerized application image to deploy to Kubernetes.
+
+```Dockerfile
+# Use lightweight Node.js image
+FROM node:18-alpine
+
+# Working directory inside container
+WORKDIR /usr/src/app
+
+# Copy app files
+COPY . .
+
+# Install minimal dependencies
+RUN npm install express
+
+# Expose port
+EXPOSE 3000
+
+# Start app
+CMD ["node", "app.js"]
+```
+### app.js:
+
+```
+const express = require('express');
+const app = express();
+
+app.get('/', (req, res) => {
+  console.log(`[${new Date().toISOString()}] GET / request received`);
+  res.send('🚀 Sample Node App for Promtail Logging Demo!');
+});
+
+setInterval(() => {
+  console.log(`[${new Date().toISOString()}] App heartbeat log`);
+}, 5000);
+
+app.listen(3000, () => {
+  console.log('Server running on port 3000');
+});
+```
+## Build, tag, and push (Docker Hub example)
+```bash
+# login first
+docker login
+
+# build
+docker build -t <dockerhub_user>/demo-node-logger:latest .
+
+# push
+docker push <dockerhub_user>/demo-node-logger:latest
+
+```
 ### Install NGINX Ingress Controller
 ```bash
 helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
