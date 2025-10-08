@@ -1,0 +1,186 @@
+---
+# ServiceAccount for Prometheus
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: monitoring
+---
+# RBAC for Prometheus
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/proxy", "services", "endpoints", "pods", "namespaces", "events"]
+    verbs: ["get", "list", "watch", "create", "patch"]
+  - apiGroups: ["apps", "extensions"]
+    resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["prometheuses","alertmanagers","servicemonitors","prometheusrules","thanosrulers","podmonitors","scrapeconfigs"]
+    verbs: ["get","list","watch","create","update","patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: monitoring
+---
+# Prometheus CR (Operator will create StatefulSet)
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  replicas: 1
+  serviceAccountName: prometheus
+  serviceMonitorSelector: {}
+  podMonitorSelector: {}
+  resources:
+    requests:
+      memory: 400Mi
+      cpu: 200m
+  retention: 10d
+  enableAdminAPI: true
+  securityContext:
+    runAsUser: 65534
+    runAsGroup: 65534
+    fsGroup: 65534
+  storage:
+    volumeClaimTemplate:
+      metadata:
+        name: prometheus-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+        storageClassName: gp3
+---
+# Prometheus Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-service
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/instance: prometheus
+spec:
+  type: ClusterIP
+  ports:
+  - name: web
+    port: 9090
+    targetPort: web
+  selector:
+    prometheus: prometheus
+---
+# Ingress for Prometheus
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: prometheus-ingress
+  namespace: monitoring
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - prometheus.adqget.bar
+      secretName: prometheus-tls
+  rules:
+    - host: prometheus.adqget.bar
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: prometheus-service
+                port:
+                  number: 9090
+---
+# ServiceMonitor for Node Exporter
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: node-exporter
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: node-exporter
+  namespaceSelector:
+    matchNames:
+      - monitoring
+  endpoints:
+  - port: metrics
+    interval: 15s
+---
+# ServiceMonitor for Kube State Metrics
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kube-state-metrics
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: kube-state-metrics
+  namespaceSelector:
+    matchNames:
+      - monitoring
+  endpoints:
+  - port: http-metrics
+    interval: 15s
+---
+# PodMonitor for cAdvisor
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: cadvisor
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: cadvisor
+  namespaceSelector:
+    matchNames:
+      - monitoring
+  podMetricsEndpoints:
+  - port: http-metrics
+    interval: 15s
+---
+# Prometheus Rules for Cluster Usage
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cluster-rules
+  namespace: monitoring
+spec:
+  groups:
+  - name: cluster.rules
+    rules:
+    - record: instance:node_memory_utilisation:ratio
+      expr: 1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)
+    - record: instance:node_cpu_utilisation:rate5m
+      expr: 1 - avg without (cpu) (rate(node_cpu_seconds_total{mode="idle"}[5m]))
+    - record: instance:node_disk_utilisation:rate5m
+      expr: rate(node_disk_io_time_seconds_total[5m])
