@@ -1008,7 +1008,7 @@ data:
           - targets: [localhost]
             labels:
               job: app-logs
-              namespace: adq-dev
+              namespace: <YOU-APP-NameSpace> # eg: adq-dev
               __path__: /var/log/adq-dev/*.log
 
       # --- Kubernetes pod logs (Static discovery for private EKS) ---
